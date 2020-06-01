@@ -842,27 +842,15 @@ class SpecialSourceProvider:
         base_url = f'https://github.com/microsoft/playwright/raw/v{package.version}/'
         browsers_json_url = base_url + 'browsers.json'
         browsers_json = json.loads(await Requests.instance.read_all(browsers_json_url, cachable=True))
-        fetcher_ts_url = base_url + 'src/install/browserFetcher.ts'
-        fetcher_ts = (await Requests.instance.read_all(fetcher_ts_url, cachable=True)).decode()
+        dl_urls = {
+            'chromium': 'https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/%d/chrome-linux.zip',
+            'firefox': 'https://playwright.azureedge.net/builds/firefox/%s/firefox-linux.zip',
+            'webkit': 'https://playwright.azureedge.net/builds/webkit/%s/minibrowser-gtk-wpe.zip',
+        }
         for browser in browsers_json['browsers']:
             name = browser['name']
             revision = browser['revision']
-            # Match something like
-            # chromium: 'https://storage.googleapis.com',
-            dl_host_re = r'{0}:\s+\'(https?://[\w\d\.\-]+)\''.format(re.escape(name))
-            dl_host_match = re.search(dl_host_re, fetcher_ts)
-            assert dl_host_match is not None
-            dl_host = dl_host_match.group(1)
-            # Match something like
-            # if (browserName === 'chromium') {
-            #   return new Map<BrowserPlatform, string>([
-            #     ['linux', '%s/chromium-browser-snapshots/Linux_x64/%d/chrome-linux.zip'],
-            dl_path_re = r'\(browserName\s+===\s+\'{0}\'\)\s+{{.*?\'linux\',\s+\'([\w\d\.\/\-\%]+)\'.*?}}'.format(re.escape(name))
-            dl_path_match = re.search(dl_path_re, fetcher_ts, re.DOTALL)
-            assert dl_path_match is not None
-            dl_path = dl_path_match.group(1)
-            #FIXME Reusing JS string format template is unsafe and unreliable
-            dl_url = dl_path % (dl_host, int(revision))
+            dl_url = dl_urls[name] % (int(revision))
             metadata = await RemoteUrlMetadata.get(dl_url, cachable=True)
             destdir = self.gen.data_root / 'cache' / 'ms-playwright' / f'{name}-{revision}'
             self.gen.add_archive_source(dl_url,
