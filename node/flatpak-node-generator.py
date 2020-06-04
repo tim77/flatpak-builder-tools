@@ -545,9 +545,6 @@ class NodeHeaders:
         #TODO it may be better to retrieve urls from disturl/index.json
         return f'{self.disturl}/v{self.target}/node-v{self.target}-headers.tar.gz'
 
-    def get_destination(self, data_root: Path) -> Path:
-        return data_root / 'cache' / 'node-gyp' / self.target
-
     def get_install_version(self) -> str:
         #FIXME not sure if this static value will always work
         return "9"
@@ -733,17 +730,30 @@ class NodeHeadersProvider(contextlib.AbstractContextManager):
     def __exit__(self, *_: Any) -> None:
         pass
 
+    def get_gyp_dir(self) -> Path:
+        return self.gen.data_root / 'cache' / 'node-gyp'
+
     async def generate_node_headers(self, node_headers: NodeHeaders, dest: Path = None):
         url = node_headers.get_url()
         install_version = node_headers.get_install_version()
         if dest is None:
-            dest = node_headers.get_destination(data_root=self.gen.data_root)
+            dest = self.get_gyp_dir() / node_headers.target
         metadata = await RemoteUrlMetadata.get(url, cachable=True)
         self.gen.add_archive_source(url,
                                     metadata.integrity,
                                     destination=dest)
         self.gen.add_data_source(install_version,
                                  destination=dest / 'installVersion')
+
+    async def generate_sdk_node_headers(self):
+        gyp_dir = self.get_gyp_dir()
+        install_version = "9"
+        script = f'''version="$(node --version | sed \'s/^v//\')"
+                     nodedir="$(dirname $(dirname $(which node)))"
+                     mkdir -p "{gyp_dir}/$version"
+                     ln -s "$nodedir/include" "{gyp_dir}/$version/include"
+                     echo "{install_version}" > "{gyp_dir}/$version/installVersion"'''
+        self.gen.add_command('\n'.join(l.strip() for l in script.splitlines()))
 
     generate_package = generate_node_headers
 
@@ -1654,6 +1664,9 @@ async def main() -> None:
     parser.add_argument('--electron-node-headers',
                         action='store_true',
                         help='Download the electron node headers')
+    parser.add_argument('--sdk-node-headers',
+                        action='store_true',
+                        help='Wrap node headers from SDK extension for node-gyp')
     parser.add_argument('--xdg-layout',
                         action='store_true',
                         help='Use XDG layout for caches')
@@ -1709,7 +1722,7 @@ async def main() -> None:
 
     print('Reading packages from lockfiles...')
     packages: Set[Package] = set()
-    node_headers: Set[NodeHeaders] = set()
+    rcfile_node_headers: Set[NodeHeaders] = set()
 
     for lockfile in lockfiles:
         lockfile_provider = provider_factory.create_lockfile_provider()
@@ -1721,7 +1734,7 @@ async def main() -> None:
         if rcfile.is_file():
             nh = rcfile_provider.get_node_headers(rcfile)
             if nh is not None:
-                node_headers.add(nh)
+                rcfile_node_headers.add(nh)
 
     print(f'{len(packages)} packages read.')
 
@@ -1738,10 +1751,12 @@ async def main() -> None:
         with provider_factory.create_module_provider(gen, special) as module_provider:
             with GeneratorProgress(packages, module_provider) as progress:
                 await progress.run()
-        if node_headers:
-            with provider_factory.create_headers_provider(gen) as headers_provider:
-                with GeneratorProgress(node_headers, headers_provider) as headers_progress:
+        with provider_factory.create_headers_provider(gen) as headers_provider:
+            if rcfile_node_headers:
+                with GeneratorProgress(rcfile_node_headers, headers_provider) as headers_progress:
                     await headers_progress.run()
+            if args.sdk_node_headers:
+                await headers_provider.generate_sdk_node_headers()
 
     if args.split:
         for i, part in enumerate(gen.split_sources()):
