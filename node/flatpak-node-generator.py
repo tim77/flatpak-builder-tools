@@ -1444,6 +1444,8 @@ class YarnRCFileProvider(RCFileProvider):
 
     def get_node_headers(self, rcfile: Path) -> NodeHeaders:
         yarnrc = self.parse_rcfile(rcfile)
+        if 'target' not in yarnrc:
+            return None
         nh_args = {'target': yarnrc['target']}
         for k in ['runtime', 'disturl']:
             if k in yarnrc:
@@ -1722,7 +1724,9 @@ async def main() -> None:
 
         rcfile = lockfile.parent / rcfile_provider.rcfile_name
         if rcfile.is_file():
-            node_headers.add(rcfile_provider.get_node_headers(rcfile))
+            nh = rcfile_provider.get_node_headers(rcfile)
+            if nh is not None:
+                node_headers.add(nh)
 
     print(f'{len(packages)} packages read.')
 
@@ -1739,9 +1743,10 @@ async def main() -> None:
         with provider_factory.create_module_provider(gen, special) as module_provider:
             with GeneratorProgress(packages, module_provider) as progress:
                 await progress.run()
-        with provider_factory.create_headers_provider(gen) as headers_provider:
-            with GeneratorProgress(node_headers, headers_provider) as headers_progress:
-                await headers_progress.run()
+        if node_headers:
+            with provider_factory.create_headers_provider(gen) as headers_provider:
+                with GeneratorProgress(node_headers, headers_provider) as headers_progress:
+                    await headers_progress.run()
 
     if args.split:
         for i, part in enumerate(gen.split_sources()):
