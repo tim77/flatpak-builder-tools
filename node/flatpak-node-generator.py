@@ -517,6 +517,42 @@ class Package(NamedTuple):
     lockfile: Path
 
 
+class NodeHeaders:
+    def __init__(self, target: str, runtime: str = None, disturl: str = None):
+        self.target = target
+        if runtime is not None:
+            self.runtime = runtime
+        else:
+            self.runtime = 'node'
+        if disturl is not None:
+            self.disturl = disturl
+        elif self.runtime == 'node':
+            self.disturl = 'http://nodejs.org/dist'
+        elif self.runtime == 'electron':
+            self.disturl = 'https://www.electronjs.org/headers'
+        else:
+            raise ValueError(f'Can\'t guess `disturl` for {self.name} version {self.version}')
+
+    @property
+    def name(self):
+        return f'{self.runtime}-headers'
+
+    @property
+    def version(self):
+        return self.target
+
+    def get_url(self) -> str:
+        #TODO it may be better to retrieve urls from disturl/index.json
+        return f'{self.disturl}/v{self.target}/node-v{self.target}-headers.tar.gz'
+
+    def get_destination(self, data_root: Path) -> Path:
+        return data_root / 'cache' / 'node-gyp' / self.target
+
+    def get_install_version(self) -> str:
+        #FIXME not sure if this static value will always work
+        return "9"
+
+
 class ManifestGenerator(contextlib.AbstractContextManager):
     MAX_GITHUB_SIZE = 49 * 1000 * 1000
     JSON_INDENT = 4
@@ -680,9 +716,35 @@ class LockfileProvider:
         raise NotImplementedError()
 
 
+class RCFileProvider:
+    def get_node_headers(self, rcfile: Path) -> NodeHeaders:
+        raise NotImplementedError()
+
+
 class ModuleProvider(contextlib.AbstractContextManager):
     async def generate_package(self, package: Package) -> None:
         raise NotImplementedError()
+
+
+class NodeHeadersProvider(contextlib.AbstractContextManager):
+    def __init__(self, gen: ManifestGenerator):
+        self.gen = gen
+
+    def __exit__(self, *_: Any) -> None:
+        pass
+
+    async def generate_node_headers(self, node_headers: NodeHeaders):
+        url = node_headers.get_url()
+        install_version = node_headers.get_install_version()
+        dest = node_headers.get_destination(data_root=self.gen.data_root)
+        metadata = await RemoteUrlMetadata.get(url, cachable=True)
+        self.gen.add_archive_source(url,
+                                    metadata.integrity,
+                                    destination=dest)
+        self.gen.add_data_source(install_version,
+                                 destination=dest / 'installVersion')
+
+    generate_package = generate_node_headers
 
 
 class ElectronBinaryManager:
@@ -1366,6 +1428,29 @@ class YarnLockfileProvider(LockfileProvider):
             yield self.parse_package_section(lockfile, section)
 
 
+class YarnRCFileProvider(RCFileProvider):
+    rcfile_name = '.yarnrc'
+
+    @classmethod
+    def parse_rcfile(cls, rcfile: Path) -> Dict[str, str]:
+        parser_re = re.compile(r'^(\S+)\s+(?:"(.+)"|(\S+))', re.MULTILINE)
+        with open(rcfile, 'r') as r:
+            rcfile_text = r.read()
+        result = {}
+        for key, quoted_val, val in parser_re.findall(rcfile_text):
+            result[key] = quoted_val + val
+        print(result)
+        return result
+
+    def get_node_headers(self, rcfile: Path) -> NodeHeaders:
+        yarnrc = self.parse_rcfile(rcfile)
+        nh_args = {'target': yarnrc['target']}
+        for k in ['runtime', 'disturl']:
+            if k in yarnrc:
+                nh_args[k] = yarnrc[k]
+        return NodeHeaders(**nh_args)
+
+
 class YarnModuleProvider(ModuleProvider):
     # From https://github.com/yarnpkg/yarn/blob/v1.22.4/src/fetchers/tarball-fetcher.js
     _PACKAGE_TARBALL_URL_RE = re.compile(
@@ -1413,9 +1498,15 @@ class ProviderFactory:
     def create_lockfile_provider(self) -> LockfileProvider:
         raise NotImplementedError()
 
+    def create_rcfile_provider(self):
+        raise NotImplementedError()
+
     def create_module_provider(self, gen: ManifestGenerator,
                                special: SpecialSourceProvider) -> ModuleProvider:
         raise NotImplementedError()
+
+    def create_headers_provider(self, gen: ManifestGenerator) -> NodeHeadersProvider:
+        return NodeHeadersProvider(gen)
 
 
 class NpmProviderFactory(ProviderFactory):
@@ -1441,6 +1532,9 @@ class YarnProviderFactory(ProviderFactory):
 
     def create_lockfile_provider(self) -> YarnLockfileProvider:
         return YarnLockfileProvider()
+
+    def create_rcfile_provider(self) -> YarnRCFileProvider:
+        return YarnRCFileProvider()
 
     def create_module_provider(self, gen: ManifestGenerator,
                                special: SpecialSourceProvider) -> YarnModuleProvider:
@@ -1618,10 +1712,17 @@ async def main() -> None:
 
     print('Reading packages from lockfiles...')
     packages: Set[Package] = set()
+    node_headers: Set[NodeHeaders] = set()
 
     for lockfile in lockfiles:
         lockfile_provider = provider_factory.create_lockfile_provider()
+        rcfile_provider = provider_factory.create_rcfile_provider()
+ 
         packages.update(lockfile_provider.process_lockfile(lockfile))
+
+        rcfile = lockfile.parent / rcfile_provider.rcfile_name
+        if rcfile.is_file():
+            node_headers.add(rcfile_provider.get_node_headers(rcfile))
 
     print(f'{len(packages)} packages read.')
 
@@ -1638,6 +1739,9 @@ async def main() -> None:
         with provider_factory.create_module_provider(gen, special) as module_provider:
             with GeneratorProgress(packages, module_provider) as progress:
                 await progress.run()
+        with provider_factory.create_headers_provider(gen) as headers_provider:
+            with GeneratorProgress(node_headers, headers_provider) as headers_progress:
+                await headers_progress.run()
 
     if args.split:
         for i, part in enumerate(gen.split_sources()):
