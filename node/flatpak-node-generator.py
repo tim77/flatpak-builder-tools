@@ -531,21 +531,15 @@ class NodeHeaders:
         elif self.runtime == 'electron':
             self.disturl = 'https://www.electronjs.org/headers'
         else:
-            raise ValueError(f'Can\'t guess `disturl` for {self.name} version {self.version}')
+            raise ValueError(f'Can\'t guess `disturl` for {self.runtime} version {self.target}')
 
     @property
-    def name(self):
-        return f'{self.runtime}-headers'
-
-    @property
-    def version(self):
-        return self.target
-
-    def get_url(self) -> str:
+    def url(self) -> str:
         #TODO it may be better to retrieve urls from disturl/index.json
         return f'{self.disturl}/v{self.target}/node-v{self.target}-headers.tar.gz'
 
-    def get_install_version(self) -> str:
+    @property
+    def install_version(self) -> str:
         #FIXME not sure if this static value will always work
         return "9"
 
@@ -723,19 +717,16 @@ class ModuleProvider(contextlib.AbstractContextManager):
         raise NotImplementedError()
 
 
-class NodeHeadersProvider(contextlib.AbstractContextManager):
+class NodeHeadersProvider:
     def __init__(self, gen: ManifestGenerator):
         self.gen = gen
-
-    def __exit__(self, *_: Any) -> None:
-        pass
 
     def get_gyp_dir(self) -> Path:
         return self.gen.data_root / 'cache' / 'node-gyp'
 
     async def generate_node_headers(self, node_headers: NodeHeaders, dest: Path = None):
-        url = node_headers.get_url()
-        install_version = node_headers.get_install_version()
+        url = node_headers.url
+        install_version = node_headers.install_version
         if dest is None:
             dest = self.get_gyp_dir() / node_headers.target
         metadata = await RemoteUrlMetadata.get(url, cachable=True)
@@ -754,8 +745,6 @@ class NodeHeadersProvider(contextlib.AbstractContextManager):
                      ln -s "$nodedir/include" "{gyp_dir}/$version/include"
                      echo "{install_version}" > "{gyp_dir}/$version/installVersion"'''
         self.gen.add_command('\n'.join(l.strip() for l in script.splitlines()))
-
-    generate_package = generate_node_headers
 
 
 class ElectronBinaryManager:
@@ -1512,9 +1501,6 @@ class ProviderFactory:
                                special: SpecialSourceProvider) -> ModuleProvider:
         raise NotImplementedError()
 
-    def create_headers_provider(self, gen: ManifestGenerator) -> NodeHeadersProvider:
-        return NodeHeadersProvider(gen)
-
 
 class NpmProviderFactory(ProviderFactory):
     class Options(NamedTuple):
@@ -1751,12 +1737,12 @@ async def main() -> None:
         with provider_factory.create_module_provider(gen, special) as module_provider:
             with GeneratorProgress(packages, module_provider) as progress:
                 await progress.run()
-        with provider_factory.create_headers_provider(gen) as headers_provider:
-            if rcfile_node_headers:
-                with GeneratorProgress(rcfile_node_headers, headers_provider) as headers_progress:
-                    await headers_progress.run()
-            if args.sdk_node_headers:
-                await headers_provider.generate_sdk_node_headers()
+        headers_provider = NodeHeadersProvider(gen)
+        for headers in rcfile_node_headers:
+            print(f'Generating headers {headers.runtime} @ {headers.target}')
+            await headers_provider.generate_node_headers(headers)
+        if args.sdk_node_headers:
+            headers_provider.generate_sdk_node_headers()
 
     if args.split:
         for i, part in enumerate(gen.split_sources()):
