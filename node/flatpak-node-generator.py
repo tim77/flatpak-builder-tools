@@ -708,7 +708,7 @@ class LockfileProvider:
 
 
 class RCFileProvider:
-    def get_node_headers(self, rcfile: Path) -> NodeHeaders:
+    def get_node_headers(self, rcfile: Path) -> Optional[NodeHeaders]:
         raise NotImplementedError()
 
 
@@ -721,14 +721,15 @@ class NodeHeadersProvider:
     def __init__(self, gen: ManifestGenerator):
         self.gen = gen
 
-    def get_gyp_dir(self) -> Path:
+    @property
+    def gyp_dir(self) -> Path:
         return self.gen.data_root / 'cache' / 'node-gyp'
 
     async def generate_node_headers(self, node_headers: NodeHeaders, dest: Path = None):
         url = node_headers.url
         install_version = node_headers.install_version
         if dest is None:
-            dest = self.get_gyp_dir() / node_headers.target
+            dest = self.gyp_dir / node_headers.target
         metadata = await RemoteUrlMetadata.get(url, cachable=True)
         self.gen.add_archive_source(url,
                                     metadata.integrity,
@@ -736,8 +737,8 @@ class NodeHeadersProvider:
         self.gen.add_data_source(install_version,
                                  destination=dest / 'installVersion')
 
-    async def generate_sdk_node_headers(self):
-        gyp_dir = self.get_gyp_dir()
+    def symlink_sdk_node_headers(self):
+        gyp_dir = self.gyp_dir
         install_version = "9"
         script = f'''version="$(node --version | sed \'s/^v//\')"
                      nodedir="$(dirname $(dirname $(which node)))"
@@ -1423,28 +1424,25 @@ class YarnLockfileProvider(LockfileProvider):
 
 
 class YarnRCFileProvider(RCFileProvider):
-    rcfile_name = '.yarnrc'
+    RCFILE_NAME = '.yarnrc'
 
-    @classmethod
-    def parse_rcfile(cls, rcfile: Path) -> Dict[str, str]:
+    def parse_rcfile(self, rcfile: Path) -> Dict[str, str]:
         parser_re = re.compile(r'^(\S+)\s+(?:"(.+)"|(\S+))', re.MULTILINE)
         with open(rcfile, 'r') as r:
             rcfile_text = r.read()
         result = {}
         for key, quoted_val, val in parser_re.findall(rcfile_text):
-            result[key] = quoted_val + val
-        print(result)
+            result[key] = quoted_val or val
         return result
 
-    def get_node_headers(self, rcfile: Path) -> NodeHeaders:
+    def get_node_headers(self, rcfile: Path) -> Optional[NodeHeaders]:
         yarnrc = self.parse_rcfile(rcfile)
         if 'target' not in yarnrc:
             return None
-        nh_args = {'target': yarnrc['target']}
-        for k in ['runtime', 'disturl']:
-            if k in yarnrc:
-                nh_args[k] = yarnrc[k]
-        return NodeHeaders(**nh_args)
+        target = yarnrc['target']
+        runtime = yarnrc.get('runtime')
+        disturl = yarnrc.get('disturl')
+        return NodeHeaders(target, runtime, disturl)
 
 
 class YarnModuleProvider(ModuleProvider):
@@ -1716,7 +1714,7 @@ async def main() -> None:
  
         packages.update(lockfile_provider.process_lockfile(lockfile))
 
-        rcfile = lockfile.parent / rcfile_provider.rcfile_name
+        rcfile = lockfile.parent / rcfile_provider.RCFILE_NAME
         if rcfile.is_file():
             nh = rcfile_provider.get_node_headers(rcfile)
             if nh is not None:
@@ -1742,7 +1740,7 @@ async def main() -> None:
             print(f'Generating headers {headers.runtime} @ {headers.target}')
             await headers_provider.generate_node_headers(headers)
         if args.sdk_node_headers:
-            headers_provider.generate_sdk_node_headers()
+            headers_provider.symlink_sdk_node_headers()
 
     if args.split:
         for i, part in enumerate(gen.split_sources()):
