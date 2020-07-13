@@ -737,11 +737,11 @@ class NodeHeadersProvider:
         self.gen.add_data_source(install_version,
                                  destination=dest / 'installVersion')
 
-    def symlink_sdk_node_headers(self):
+    def symlink_sdk_node_headers(self, sdk_ext: str):
         gyp_dir = self.gyp_dir
         install_version = "9"
-        script = f'''version="$(node --version | sed \'s/^v//\')"
-                     nodedir="$(dirname $(dirname $(which node)))"
+        script = f'''nodedir="/usr/lib/sdk/{sdk_ext}"
+                     version="$($nodedir/bin/node --version | sed \'s/^v//\')"
                      mkdir -p "{gyp_dir}/$version"
                      ln -s "$nodedir/include" "{gyp_dir}/$version/include"
                      echo "{install_version}" > "{gyp_dir}/$version/installVersion"'''
@@ -1648,9 +1648,8 @@ async def main() -> None:
     parser.add_argument('--electron-node-headers',
                         action='store_true',
                         help='Download the electron node headers')
-    parser.add_argument('--sdk-node-headers',
-                        action='store_true',
-                        help='Wrap node headers from SDK extension for node-gyp')
+    parser.add_argument('--sdk-node',
+                        help='Wrap node headers from this SDK extension for node-gyp')
     parser.add_argument('--xdg-layout',
                         action='store_true',
                         help='Use XDG layout for caches')
@@ -1739,8 +1738,8 @@ async def main() -> None:
         for headers in rcfile_node_headers:
             print(f'Generating headers {headers.runtime} @ {headers.target}')
             await headers_provider.generate_node_headers(headers)
-        if args.sdk_node_headers:
-            headers_provider.symlink_sdk_node_headers()
+        if args.sdk_node:
+            headers_provider.symlink_sdk_node_headers(sdk_ext=args.sdk_node)
 
     if args.split:
         for i, part in enumerate(gen.split_sources()):
