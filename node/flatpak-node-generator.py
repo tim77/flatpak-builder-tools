@@ -740,12 +740,14 @@ class NodeHeadersProvider:
     def symlink_sdk_node_headers(self, sdk_ext: str):
         gyp_dir = self.gyp_dir
         install_version = "9"
-        script = f'''nodedir="/usr/lib/sdk/{sdk_ext}"
+        script = f'''\
+                     nodedir="/usr/lib/sdk/{sdk_ext}"
                      version="$($nodedir/bin/node --version | sed \'s/^v//\')"
                      mkdir -p "{gyp_dir}/$version"
                      ln -s "$nodedir/include" "{gyp_dir}/$version/include"
-                     echo "{install_version}" > "{gyp_dir}/$version/installVersion"'''
-        self.gen.add_command('\n'.join(l.strip() for l in script.splitlines()))
+                     echo "{install_version}" > "{gyp_dir}/$version/installVersion"
+                 '''
+        self.gen.add_command(textwrap.dedent(script))
 
 
 class ElectronBinaryManager:
