@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
+import argparse
 import copy
 import json
 import os
 import re
-import argparse
+
 import yaml
 
 MULTILIB_PROP = "x-multilib"
@@ -27,6 +28,7 @@ UNCLEANUP_PATTERNS = [
     r"^/lib/cmake"
 ]
 
+
 def load_dict_file(dict_file):
     with open(dict_file, "r") as f:
         if any(dict_file.endswith(i) for i in [".yml", ".yml.in", ".yaml", "yaml.in"]):
@@ -38,6 +40,7 @@ def load_dict_file(dict_file):
         d = loader(f)
     return d
 
+
 def save_dict_file(dict_data, dict_file):
     with open(dict_file, "w") as f:
         if any(dict_file.endswith(i) for i in [".yml", ".yaml"]):
@@ -48,6 +51,7 @@ def save_dict_file(dict_data, dict_file):
             raise ValueError(f"Unknown format of {dict_file}")
         writer(dict_data, f)
 
+
 def merge_dicts(base_dict, update_dict):
     merged_dict = copy.deepcopy(base_dict)
     for upd_key, upd_val in update_dict.items():
@@ -56,6 +60,7 @@ def merge_dicts(base_dict, update_dict):
         else:
             merged_dict[upd_key] = upd_val
     return merged_dict
+
 
 def multilibify(holder_object, holder_file, base_dir=None, variants=None):
     holder_dir = os.path.dirname(holder_file)
@@ -91,13 +96,15 @@ def multilibify(holder_object, holder_file, base_dir=None, variants=None):
 
         for v, props in variants.items():
             new_module = merge_dicts(orig_module, props)
-            new_module["name"] = "{0}{1}".format(orig_module["name"], VARIANTS[v].get("name-suffix", ""))
+            new_module["name"] = "{0}{1}".format(orig_module["name"],
+                                                 VARIANTS[v].get("name-suffix", ""))
             if "modules" in new_module:
                 new_module = multilibify(new_module, module_file, base_dir, variants={v: props})
             modules.append(new_module)
 
     holder_object["modules"] = modules
     return holder_object
+
 
 def uncleanup(holder_object, uncleanup_regexps=None):
     if uncleanup_regexps is None:
@@ -113,6 +120,7 @@ def uncleanup(holder_object, uncleanup_regexps=None):
             uncleanup(module, uncleanup_regexps)
     return holder_object
 
+
 def main():
     parser = argparse.ArgumentParser("Make flatpak-builder modules multilib")
     parser.add_argument("-u", "--uncleanup", action="store_true", help="Undo cleanup rules")
@@ -124,6 +132,7 @@ def main():
     if args.uncleanup:
         uncleanup(holder_object)
     save_dict_file(holder_object, args.target_manifest)
+
 
 if __name__ == "__main__":
     main()
