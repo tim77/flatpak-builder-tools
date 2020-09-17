@@ -115,11 +115,14 @@ def uncleanup(holder_object, uncleanup_regexps=None):
 
 def main():
     parser = argparse.ArgumentParser("Make flatpak-builder modules multilib")
+    parser.add_argument("-u", "--uncleanup", action="store_true", help="Undo cleanup rules")
     parser.add_argument("source_manifest")
     parser.add_argument("target_manifest")
     args = parser.parse_args()
     holder_object = load_dict_file(args.source_manifest)
     multilibify(holder_object, args.source_manifest)
+    if args.uncleanup:
+        uncleanup(holder_object)
     save_dict_file(holder_object, args.target_manifest)
 
 if __name__ == "__main__":
